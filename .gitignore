@@ -1,0 +1,7 @@
+*.muc
+*.pyc
+*.pyo
+build
+defines.json
+host.ini
+.idea
