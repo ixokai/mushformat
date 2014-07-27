@@ -21,17 +21,20 @@
 """mushformat
 
 Usage:
-    mushformat compile [-O OUTPUT] [-D NAME=VALUE ...] [--defines PATH] [SOURCE ...]
+    mushformat compile [-O OUTPUT | --clipboard] [-D NAME=VALUE ...] [--defines PATH] [--match PATTERN] [SOURCE ...]
+    mushformat compile -P PROJECT [-D NAME=VALUE ...] [--defines PATH]
     mushformat define [NAME VALUE | --name=NAME --value=VALUE] [--defines PATH]
     mushformat define --list [--defines PATH]
     mushformat define --delete NAME [--defines PATH]
-    mushformat install (-S SOURCE | -O OUTPUT) -H HOSTINI [ -D NAME=VALUE ...] [--defines PATH]
-
-
+    mushformat install (-S SOURCE | -O OUTPUT | -P PROJECT) -H HOSTINI [ -D NAME=VALUE ...] [--defines PATH]
 
 Options:
+  -O OUTPUT  File to write compiled MUSHCode to
   -D NAME=VALUE  Set a define for only this compilation.
   --defines PATH  The path to a defines.json file; if set to off, no defines will be used. [default: .]
+  --match PATTERN  Only lines which match the specified regex pattern (automatically rooted at the beginning) will be written out
+  -P PROJECT  Compile or install the project specified in the given muprj file.
+  -H HOSTINI  The specified host.ini will specify the connection and authorization information for installation
 
 Credit:
   mushformat is written by Stephen Hansen (aka, ixokai)
@@ -60,16 +63,21 @@ Credit:
 #           adds it to the installation defines.
 
 
-__VERSION__ = "0.1"
+__VERSION__ = "0.2"
 
+import io
 import os
 import re
 import sys
 import json
 import glob
+import configparser
+
+import pyperclip
 
 from docopt import docopt
-from tkinter import Tk, filedialog
+from tkinter import Tk, filedialog, messagebox
+
 
 class DefineHandler:
     def __init__(self, arguments):
@@ -167,22 +175,48 @@ class CompileHandler:
 
     def main(self):
         source_paths = self.arguments["SOURCE"]
-        output_path = self.arguments["OUTPUT"]
+        output_path = self.arguments["-O"]
+        match_pattern = self.arguments["--match"]
+        clipboard = self.arguments["--clipboard"]
 
         if not source_paths:
             source_paths = filedialog.askopenfilenames(title="Select MUSH Source files?")
             if not source_paths:
                 return
 
-        if not output_path:
+        if not output_path and not clipboard:
             output_path = filedialog.asksaveasfilename(title="Save compiled MUSHCode to?")
             if not output_path:
                 return
 
-        source_paths = [os.path.abspath(p) for p in source_paths]
+        expanded_paths = []
+        for source_path in source_paths:
+            source_path = os.path.abspath(source_path)
+
+            expanded_paths.extend(glob.glob(source_path))
+
         output_path = os.path.abspath(output_path)
 
-        self.compile(source_paths, output_path)
+        compiled_data = io.StringIO()
+
+        self.compile(expanded_paths, compiled_data)
+
+        compiled_data.seek(0)
+
+        if match_pattern:
+            output_data = io.StringIO()
+            for line in compiled_data:
+                if re.match(match_pattern, line):
+                    output_data.write(line)
+        else:
+            output_data = compiled_data
+
+        output_data.seek(0)
+        if clipboard:
+            pyperclip.copy(output_data.read())
+        else:
+            with io.open(output_path, 'wt', newline=None, encoding="latin1") as output_file:
+                output_file.write(output_data.read())
 
     def do_directive(self, directive):
         if directive[0].lower() == "define":
@@ -207,7 +241,7 @@ class CompileHandler:
         if "\t" in line:
             line = line.replace("\t", " " * 8)
 
-        line = re.sub("\s{2,}", self._space_compress, line)
+        line = re.sub(r"\s{2,}", self._space_compress, line)
 
         output.append(line)
 
@@ -216,45 +250,44 @@ class CompileHandler:
 
         return "".join(output)
 
-    def compile(self, source_paths, output_path):
-        with open(output_path, "w") as output_file:
-            for source_path in source_paths:
-                with open(source_path, "rU") as source_file:
-                    for line in source_file:
-                        if line.endswith("\n"):
-                            line = line[:-1]
+    def compile(self, source_paths, output_file):
+        for source_path in source_paths:
+            with io.open(source_path, "rt", encoding="latin1", newline=None) as source_file:
+                for line in source_file:
+                    if line.endswith("\n"):
+                        line = line[:-1]
 
-                        if line.startswith("#:"):
-                            self.do_directive(line[2:].split(" "))
-                            continue
+                    if line.startswith("#:"):
+                        self.do_directive(line[2:].split(" "))
+                        continue
 
-                        if line.startswith("@@") or line.startswith("#"):
-                            continue
+                    if line.startswith("@@") or line.startswith("#"):
+                        continue
 
-                        if not line.strip():
-                            continue
+                    if not line.strip():
+                        continue
 
-                        for define, replacement in self.current_defines.items():
-                            if define in line:
-                                line = line.replace(define, replacement)
+                    for define, replacement in self.current_defines.items():
+                        if define in line:
+                            line = line.replace(define, replacement)
 
-                        if line.startswith('"') and line.endswith('"'):
-                            output_file.write(self.do_quote(line[1:-1]))
-                            continue
+                    if line.startswith('"') and line.endswith('"'):
+                        output_file.write(self.do_quote(line[1:-1]))
+                        continue
 
-                        if line.strip() == "-":
-                            output_file.write("\n")
-                            continue
-                        elif line.startswith("-"):
-                            output_file.write("\n")
-                            line = line[1:]
+                    if line.strip() == "-":
+                        output_file.write("\n")
+                        continue
+                    elif line.startswith("-"):
+                        output_file.write("\n")
+                        line = line[1:]
 
-                        if not line[0].isspace():
-                            output_file.write("\n")
+                    if not line[0].isspace():
+                        output_file.write("\n")
 
-                        output_file.write(line.strip())
+                    output_file.write(line.strip())
 
-                    output_file.write("\n")
+                output_file.write("\n")
 
 
 class InstallHandler:
@@ -265,9 +298,8 @@ class InstallHandler:
         sys.exit(4)
 
 
-
 def main():
-    if not sys.argv[1:]:
+    if sys.executable.endswith("mushformat.exe") and not sys.argv[1:]:
         sys.argv = [sys.argv[0], "compile"]
 
     arguments = docopt(__doc__, version="mushformat {}".format(__VERSION__))
@@ -275,6 +307,8 @@ def main():
 
     root = Tk()
     root.withdraw()
+
+    #print("Arguments: {!r}".format(arguments))
 
     if arguments["define"]:
         handler = DefineHandler(arguments)
