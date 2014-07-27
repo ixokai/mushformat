@@ -55,6 +55,7 @@ Credit:
 #        preserved. If it ends with \" the trailing %r will be skipped.
 #        Tab characters are treated as 8 spaces in quote mode.
 #     6) Leading whitespace on a line indicates a continuation of the previous line
+#     7) On a line, any text after #// is discarded.
 #
 # Directives:
 #
@@ -270,6 +271,9 @@ class CompileHandler:
                     for define, replacement in self.current_defines.items():
                         if define in line:
                             line = line.replace(define, replacement)
+
+                    if "#//" in line:
+                        line = line[:line.index("#//")]
 
                     if line.startswith('"') and line.endswith('"'):
                         output_file.write(self.do_quote(line[1:-1]))
