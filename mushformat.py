@@ -214,7 +214,8 @@ class CompileHandler:
 
         output_data.seek(0)
         if clipboard:
-            pyperclip.copy(output_data.read())
+            data = output_data.read()
+            pyperclip.copy(data.replace("\n", os.linesep))
         else:
             with io.open(output_path, 'wt', newline=None, encoding="latin1") as output_file:
                 output_file.write(output_data.read())
