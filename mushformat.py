@@ -26,15 +26,16 @@ Usage:
     mushformat define [NAME VALUE | --name=NAME --value=VALUE] [--defines PATH]
     mushformat define --list [--defines PATH]
     mushformat define --delete NAME [--defines PATH]
-    mushformat install (-S SOURCE | -O OUTPUT | -P PROJECT) -H HOSTINI [ -D NAME=VALUE ...] [--defines PATH]
+    mushformat install (-S SOURCE ... | -C COMPILED ... | -P PROJECT) -H HOSTCFG [ -D NAME=VALUE ...] [--defines PATH] [--match PATTERN]
 
 Options:
-  -O OUTPUT  File to write compiled MUSHCode to
+  -S SOURCE  For install, file to read raw MUSHcode from
+  -O OUTPUT  For compile, File to write compiled MUSHCode to; for install, file to read compiled MUSHcode from.
   -D NAME=VALUE  Set a define for only this compilation.
   --defines PATH  The path to a defines.json file; if set to off, no defines will be used. [default: .]
   --match PATTERN  Only lines which match the specified regex pattern (automatically rooted at the beginning) will be written out
-  -P PROJECT  Compile or install the project specified in the given muprj file.
-  -H HOSTINI  The specified host.ini will specify the connection and authorization information for installation
+  -P PROJECT  Compile or install the project specified in the given project.yaml file.
+  -H HOSTCFG  The specified host.yaml will specify the connection and authorization information for installation
 
 Credit:
   mushformat is written by Stephen Hansen (aka, ixokai)
@@ -70,10 +71,13 @@ import io
 import os
 import re
 import sys
-import json
+import time
 import glob
-import configparser
+import random
+import string
+import telnetlib
 
+import yaml
 import pyperclip
 
 from docopt import docopt
@@ -89,7 +93,7 @@ class DefineHandler:
         else:
             self.defines_file = os.path.join(defines)
             if os.path.isdir(self.defines_file):
-                self.defines_file = os.path.join(self.defines_file, "defines.json")
+                self.defines_file = os.path.join(self.defines_file, "defines.yaml")
 
     def _get_current(self):
         if self.defines_file is None:
@@ -97,7 +101,7 @@ class DefineHandler:
 
         try:
             with open(self.defines_file, "rU") as defines_file:
-                return json.load(defines_file)
+                return yaml.load(defines_file)
         except FileNotFoundError:
             return {}
 
@@ -111,7 +115,7 @@ class DefineHandler:
         current_defines[key] = value
 
         with open(self.defines_file, "w") as defines_file:
-            json.dump(current_defines, defines_file)
+            yaml.dump(current_defines, defines_file, default_flow_style=False)
 
         print("mushformat: defined '{}' as '{}'".format(key, value))
 
@@ -140,7 +144,7 @@ class DefineHandler:
             del current_defines[key]
 
             with open(self.defines_file, "w") as defines_file:
-                json.dump(current_defines, defines_file)
+                yaml.dump(current_defines, defines_file, default_flow_style=False)
 
             print("mushformat: '{}' is no longer defined.".format(key))
         else:
@@ -165,6 +169,7 @@ class CompileHandler:
         self.arguments = arguments
         self.define_handler = DefineHandler(arguments)
         self.current_defines = self.define_handler.current_defines
+        self.install_directives = {}
 
         for item in arguments["-D"]:
             if "=" not in item:
@@ -174,59 +179,19 @@ class CompileHandler:
             key, value = [x.strip() for x in item.split("=", 1)]
             self.current_defines[key] = value
 
-    def main(self):
-        source_paths = self.arguments["SOURCE"]
-        output_path = self.arguments["-O"]
-        match_pattern = self.arguments["--match"]
-        clipboard = self.arguments["--clipboard"]
-
-        if not source_paths:
-            source_paths = filedialog.askopenfilenames(title="Select MUSH Source files?")
-            if not source_paths:
-                return
-
-        if not output_path and not clipboard:
-            output_path = filedialog.asksaveasfilename(title="Save compiled MUSHCode to?")
-            if not output_path:
-                return
-
-        expanded_paths = []
-        for source_path in source_paths:
-            source_path = os.path.abspath(source_path)
-
-            expanded_paths.extend(glob.glob(source_path))
-
-        output_path = os.path.abspath(output_path)
-
-        compiled_data = io.StringIO()
-
-        self.compile(expanded_paths, compiled_data)
-
-        compiled_data.seek(0)
-
-        if match_pattern:
-            output_data = io.StringIO()
-            for line in compiled_data:
-                if re.match(match_pattern, line):
-                    output_data.write(line)
-        else:
-            output_data = compiled_data
-
-        output_data.seek(0)
-        if clipboard:
-            data = output_data.read()
-            pyperclip.copy(data.replace("\n", os.linesep))
-        else:
-            with io.open(output_path, 'wt', newline=None, encoding="latin1") as output_file:
-                output_file.write(output_data.read())
-
     def do_directive(self, directive):
+        # todo: make this a proper dispatch
         if directive[0].lower() == "define":
             try:
                 self.current_defines[directive[1]] = directive[2]
             except IndexError:
                 print("Directive '{}' invalid.".format(' '.join(directive)))
                 sys.exit(2)
+        elif directive[0].lower() == "search":
+            if "search" not in self.install_directives:
+                self.install_directives["search"] = {}
+
+            self.install_directives["search"][directive[1]] = " ".join(directive[2:])
 
     def _space_compress(self, match):
         length = len(match.group(0))
@@ -294,18 +259,267 @@ class CompileHandler:
 
                 output_file.write("\n")
 
+    def build_project(self, project_path):
+        if not os.path.exists(project_path):
+            return print("mushformat: project file {} not found".format(project_path))
+
+        with io.open(project_path, 'rt', newline=None) as project_file:
+            config = yaml.load(project_file)
+
+
+        project_root = config.get("root", ".")
+
+        for target_name in config.get("targets", []):
+
+            for target_section in targets:
+            target = targets[target_section]
+
+            output_path = target["output"]
+            source_files = target["files"]
+
+    def main(self):
+        source_paths = self.arguments["SOURCE"]
+        output_path = self.arguments["-O"]
+        match_pattern = self.arguments["--match"]
+        clipboard = self.arguments["--clipboard"]
+        project = self.arguments["-P"]
+        memory_output = self.arguments.get("--memory")
+
+        if project:
+            return self.build_project(project)
+
+        if not source_paths:
+            source_paths = filedialog.askopenfilenames(title="Select MUSH Source files?")
+            if not source_paths:
+                return
+
+        if not output_path and not clipboard and not memory_output:
+            output_path = filedialog.asksaveasfilename(title="Save compiled MUSHCode to?")
+            if not output_path:
+                return
+
+        expanded_paths = []
+        for source_path in source_paths:
+            source_path = os.path.abspath(source_path)
+
+            expanded_paths.extend(glob.glob(source_path))
+
+        output_path = os.path.abspath(output_path)
+
+        compiled_data = io.StringIO()
+
+        self.compile(expanded_paths, compiled_data)
+
+        compiled_data.seek(0)
+
+        if match_pattern:
+            output_data = io.StringIO()
+            for line in compiled_data:
+                if re.match(match_pattern, line):
+                    output_data.write(line)
+        else:
+            output_data = compiled_data
+
+        output_data.seek(0)
+        if clipboard:
+            data = output_data.read()
+            pyperclip.copy(data.replace("\n", os.linesep))
+        else:
+            if memory_output:
+                return output_data
+            else:
+                with io.open(output_path, 'wt', newline=None, encoding="latin1") as output_file:
+                    output_file.write(output_data.read())
 
 class InstallHandler:
     def __init__(self, arguments):
         self.arguments = arguments
 
-        print("mushformat: installation is actually a planned but not actually done feature. erp!")
-        sys.exit(4)
+        self.define_handler = DefineHandler(arguments)
+        self.current_defines = self.define_handler.current_defines
+        self.install_directives = {}
 
+        for item in arguments["-D"]:
+            if "=" not in item:
+                print("mushformat: -D expects KEY=VALUE, got '{}'".format(item))
+                sys.exit(1)
+
+            key, value = [x.strip() for x in item.split("=", 1)]
+            self.current_defines[key] = value
+
+    def prepare_source(self):
+        arguments = self.arguments.copy()
+        arguments["SOURCE"] = arguments["-S"]
+        arguments["--memory"] = True
+
+        compile_handler = CompileHandler(arguments)
+        output_file = compile_handler.main()
+
+        self.install_directives = compile_handler.install_directives
+
+        return output_file.read()
+
+    def prepare_output(self):
+        output_paths = [os.path.abspath(p) for p in self.arguments["-O"]]
+
+        output_data = io.StringIO()
+
+        for output_path in output_paths:
+            with io.open(output_path, "rt", encoding="latin1", newline=None) as output_file:
+                output_data.write(output_file.read())
+                output_data.write("\n\n")
+
+        output_data.seek(0)
+        return output_data.read()
+
+    def prepare_project(self):
+        project_file = self.arguments["-P"]
+        if not os.path.exists(self.arguments["-P"]):
+            print("mushformat: can not find project '{}'".format(project_file))
+            sys.exit(8)
+
+        project_config = configparser.ConfigParser()
+        project_config
+
+
+    prepare = {
+        "source": prepare_source,
+        "output": prepare_output,
+        "project": prepare_project}
+
+    def main(self):
+        if self.arguments["-S"]:
+            install_from = "source"
+        elif self.arguments["-C"]:
+            install_from = "compiled"
+        elif self.arguments["-P"]:
+            install_from = "project"
+        else:
+            return print("mushformat: one of -S, -C or -P must be provided")
+
+        if not self.arguments["-H"]:
+            return print("mushformat: -H HOSTINI is required")
+
+        host_config = configparser.ConfigParser()
+        host_config.read([self.arguments["-H"]])
+
+        try:
+            address = host_config["host"]["address"].encode("latin1")
+        except KeyError:
+            return print("mushformat: HOSTINI requires [host] address= option")
+
+        try:
+            port = int(host_config["host"]["port"])
+        except KeyError:
+            return print("mushformat: HOSTINI requires [host] port= option")
+        except ValueError:
+            return print("mushformat: HOSTINI requires [host] port= option to be an integer")
+
+        try:
+            username = host_config["host"]["username"].encode("latin1")
+        except KeyError:
+            return print("mushformat: HOSTINI requires [host] username= option")
+
+        try:
+            password = host_config["host"]["password"].encode("latin1")
+        except KeyError:
+            return print("mushformat: HOSTINI requires [host] password= option")
+
+        data = self.prepare[install_from](self)
+
+        self.install(data, address, port, username, password)
+
+    def _get_token(self, __alphanum = string.ascii_letters + string.digits):
+        return ''.join(random.sample(__alphanum, 12))
+
+    def _discard_input(self, client):
+        time.sleep(1)
+
+        client.read_very_eager()
+
+    def _expect(self, client, seeking, error):
+        time.sleep(1)
+
+        text = ""
+        while not text:
+            text = client.read_very_eager()
+
+        if seeking not in text:
+            print("mushformat: {}".format(error))
+            sys.exit(6)
+
+    def _get_answer(self, client, token):
+        time.sleep(1)
+
+        text = ""
+        while not text:
+            text = client.read_very_eager()
+
+        if token not in text:
+            print("mushformat: install attempted to get answer from MUSH and failed.")
+            sys.exit(4)
+
+        try:
+            return text[text.index(token)+len(token)+1:text.rindex(token)-1].decode("latin1")
+        except ValueError:
+            return ''
+
+    def _directive_search(self, client, options, data):
+        for define, name in options.items():
+            token = self._get_token()
+
+            if define not in self.current_defines:
+                client.write("think {} [searchng(%# objects={})] {}\n".format(token, name, token).encode("latin1"))
+
+                answer = self._get_answer(client, token)
+                if not answer:
+                    print("mushformat: could not find '{}' on server to specify define '{}'.".format(name, define))
+                    sys.exit(7)
+
+                print("mushformat: answer to search {!r} = {!r} is: {!r}".format(define, name, answer))
+                self.current_defines[define] = answer.strip()
+                data = data.replace(define, answer)
+
+        return data
+
+    def _do_install_directives(self, client, data):
+        for directive, options in self.install_directives.items():
+            if not hasattr(self, '_directive_{}'.format(directive)):
+                print("mushformat: install directive {} unknown".format(directive.upper()))
+                sys.exit(3)
+
+            data = getattr(self, "_directive_{}".format(directive))(client, options, data)
+
+        return data
+
+    def install(self, data, host, port, username, password):
+        client = telnetlib.Telnet(host, port)
+        self._discard_input(client)
+
+        client.write(b" ".join((b"connect ", username, password, b"\n")))
+        self._discard_input(client)
+        client.write(b"@set me=!verbose !puppet !trace\n")
+        self._discard_input(client)
+
+        client.write(b"@version\n")
+        self._expect(client, b"RhostMUSH", "Installation is only supported on RhostMUSH currently.")
+
+        data = self._do_install_directives(client, data)
+
+        self._discard_input(client)
+
+        print("mushformat: installing...")
+
+        for n, line in enumerate(data.splitlines()):
+            print("mushformat:     line #{}".format(n+1))
+            client.write((line + "\n").encode("latin1"))
+            self._discard_input(client)
+
+        print("mushformat: installation complete.")
 
 def main():
-    if sys.executable.endswith("mushformat.exe") and not sys.argv[1:]:
-        sys.argv = [sys.argv[0], "compile"]
+    # if sys.executable.endswith("mushformat.exe") and not sys.argv[1:]:
+    #     sys.argv = [sys.argv[0], "compile"]
 
     arguments = docopt(__doc__, version="mushformat {}".format(__VERSION__))
     handler = None
@@ -313,7 +527,7 @@ def main():
     root = Tk()
     root.withdraw()
 
-    #print("Arguments: {!r}".format(arguments))
+    print("Arguments: {!r}".format(arguments))
 
     if arguments["define"]:
         handler = DefineHandler(arguments)

@@ -20,7 +20,7 @@ Features
 - Allows you to take multiple source files to compile them into a single output file for better organization
 - Allows you to speciy "defines" either in a config file, the command line, or in source files; these are search/replace operations like a #DEFINE macro in C/C++. You can use this to store certain game-specific configuration like the objects you want to write to.
 - Quoting: lines that begin and end with a doublequote (") preserve their spaces and newlines to allow you to insert ASCII art and similar things.
-- (Pending) Can connect to and directly install / upgrade code (from both source and compiled forms)
+- Can connect to and directly install / upgrade code (from both source and compiled forms)
 - (Pending) Integrates with RhostMUSH's @snapshot system to semi-automatically backup / restore systems.
 - ... dunno!
 
@@ -60,3 +60,8 @@ Directives
 The currently supported directives are:
 
 - #:DEFINE <name> <value> -- Mimics -D <name>=<value> on the command line, but is always set for this file.
+
+Configuration
+=============
+
+There are two configuration files used by mushformat: host.ini and project.ini
